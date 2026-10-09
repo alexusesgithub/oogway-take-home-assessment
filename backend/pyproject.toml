@@ -1,0 +1,31 @@
+[project]
+name = "lenny-growth-assistant"
+version = "1.0.0"
+description = "Grounded product & growth assistant over Lenny's Podcast transcripts"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "S"]
+ignore = [
+  "E501",   # long SQL/prompt strings read better unwrapped
+  "S101",   # asserts are used for internal invariants
+  "S608",   # SQL is parameterised; flagged strings are static templates
+  "B008",   # FastAPI Depends() in defaults is idiomatic
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "B"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+markers = [
+  "db: needs PostgreSQL (TEST_DATABASE_URL)",
+  "live: needs a running model provider (Ollama/Anthropic)",
+]

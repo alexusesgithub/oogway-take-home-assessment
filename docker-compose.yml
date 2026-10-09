@@ -1,0 +1,87 @@
+# One-command startup:   docker compose up --build      ->  http://localhost:8000
+#
+# Services
+#   db      PostgreSQL 16 + pgvector (conversations, sessions, knowledge base)
+#   app     FastAPI API + built React UI + Claude Agent SDK runtime
+#   ollama  (optional, `--profile ollama`) containerised Ollama if you do not
+#           run Ollama natively on the host.
+
+name: lenny-growth-assistant
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lenny}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lenny}
+      POSTGRES_DB: ${POSTGRES_DB:-lenny}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lenny} -d ${POSTGRES_DB:-lenny}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: app
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-lenny}:${POSTGRES_PASSWORD:-lenny}@db:5432/${POSTGRES_DB:-lenny}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      TRANSCRIPTS_DIR: /data/transcripts
+      STATIC_DIR: /app/static
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    volumes:
+      - transcripts:/data/transcripts
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/live', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  # Automated tests against the compose database:
+  #   docker compose --profile test run --rm tests
+  tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test
+    profiles: ["test"]
+    environment:
+      TEST_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-lenny}:${POSTGRES_PASSWORD:-lenny}@db:5432/lenny_test
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Optional: containerised Ollama. Use when Ollama is not installed on the host:
+  #   OLLAMA_BASE_URL=http://ollama:11434 docker compose --profile ollama up --build
+  ollama:
+    image: ollama/ollama:0.40.1
+    profiles: ["ollama"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  transcripts:
+  ollama:
