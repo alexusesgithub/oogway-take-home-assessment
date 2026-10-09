@@ -21,6 +21,7 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -155,7 +156,9 @@ class ClaudeAgentRuntime:
         streamed_any_text = False
         options = self._options(request)
 
-        async with self._semaphore:
+        # One deadline covers waiting for a model slot *and* the generation itself.
+        deadline = time.monotonic() + request.timeout_seconds
+        async with _slot(self._semaphore, request.timeout_seconds, target):
             queue_wait_ms = int((time.perf_counter() - started) * 1000)
             log.info(
                 "agent_run_started",
@@ -166,7 +169,6 @@ class ClaudeAgentRuntime:
             )
             stream = query(prompt=request.prompt, options=options)
             iterator = stream.__aiter__()
-            deadline = time.monotonic() + request.timeout_seconds
             try:
                 while True:
                     remaining = deadline - time.monotonic()
@@ -253,6 +255,23 @@ class ClaudeAgentRuntime:
                 ttft_ms=first_token_ms,
                 duration_ms=int((time.perf_counter() - started) * 1000),
             )
+
+
+@asynccontextmanager
+async def _slot(semaphore: asyncio.Semaphore, wait_seconds: float, target: ProviderTarget) -> AsyncIterator[None]:
+    """Acquire a model slot within the turn's deadline (bounded queueing)."""
+    try:
+        await asyncio.wait_for(semaphore.acquire(), timeout=wait_seconds)
+    except TimeoutError as exc:
+        raise ModelTimeout(
+            f"All model slots stayed busy for {int(wait_seconds)}s.",
+            hint="The model is serving other requests. Retry shortly, or raise LLM_MAX_CONCURRENCY on a GPU host.",
+            details={"provider": target.name, "stage": "queue"},
+        ) from exc
+    try:
+        yield
+    finally:
+        semaphore.release()
 
 
 def _result_error(message: Any, target: ProviderTarget) -> Exception:

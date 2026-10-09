@@ -978,7 +978,7 @@ a {
 
 .checklist li {
   display: grid;
-  grid-template-columns: 18px 1fr auto;
+  grid-template-columns: 18px max-content minmax(0, 1fr);
   gap: 6px;
   align-items: center;
 }
@@ -995,6 +995,9 @@ a {
   color: var(--text-3);
   font-size: 12px;
   text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Pending / streaming */

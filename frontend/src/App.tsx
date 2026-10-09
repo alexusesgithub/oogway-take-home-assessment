@@ -116,10 +116,10 @@ export default function App() {
     void chat.send(text, mode, provider);
   };
 
+  // send() replaces an errored turn itself, so Retry simply re-sends.
   const retry = () => {
     const last = lastSendRef.current;
-    chat.dismissError();
-    if (last) window.setTimeout(() => void chat.send(last.text, last.mode, provider), 0);
+    if (last) void chat.send(last.text, last.mode, provider);
   };
 
   // Keep the newest content in view while streaming, unless the user scrolled up.

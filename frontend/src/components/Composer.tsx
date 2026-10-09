@@ -85,12 +85,26 @@ export const Composer = forwardRef<ComposerHandle, Props>(function Composer({ bu
           disabled={disabled}
         />
         <div className="composer-bar">
-          <div className="modes" role="radiogroup" aria-label="Response type">
+          <div
+            className="modes"
+            role="radiogroup"
+            aria-label="Response type"
+            onKeyDown={(e) => {
+              const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+              if (!step) return;
+              e.preventDefault();
+              const index = (MODES.findIndex((m) => m.id === mode) + step + MODES.length) % MODES.length;
+              setMode(MODES[index].id);
+              (e.currentTarget.querySelector(`[data-mode="${MODES[index].id}"]`) as HTMLElement | null)?.focus();
+            }}
+          >
             {MODES.map(({ id, label, icon: Icon, help }) => (
               <button
                 key={id}
                 type="button"
                 role="radio"
+                data-mode={id}
+                tabIndex={mode === id ? 0 : -1}
                 aria-checked={mode === id}
                 className="mode"
                 title={help}

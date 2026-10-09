@@ -240,6 +240,12 @@ def query_bigrams(query: str) -> list[str]:
     return [f"{a} {b}" for a, b in zip(words, words[1:], strict=False)][:12]
 
 
+QUESTION_WORDS = frozenset(
+    "what how why when which who where is are was the a an of for to in on with about and or but so it this that".split()
+)
+FOLLOWUP_START_RE = re.compile(r"^\s*(and|but|also|so|what about|how about|why|same)\b", re.I)
+
+
 def build_retrieval_query(message: str, previous_user_messages: Sequence[str]) -> str:
     """Make follow-ups retrievable: "what about for B2B?" alone matches nothing,
     so short or anaphoric follow-ups are combined with the previous question."""
@@ -247,7 +253,13 @@ def build_retrieval_query(message: str, previous_user_messages: Sequence[str]) -
     if not previous_user_messages:
         return message
     words = len(message.split())
-    if words <= 8 or (words <= 20 and FOLLOWUP_HINTS.search(message)):
+    content = [w for w in _WORD_RE.findall(message) if w.lower() not in FILLER_WORDS | QUESTION_WORDS]
+    looks_like_followup = (
+        FOLLOWUP_START_RE.match(message) is not None
+        or len(content) <= 2
+        or (words <= 20 and FOLLOWUP_HINTS.search(message) is not None)
+    )
+    if looks_like_followup:
         return f"{previous_user_messages[-1].strip()} {message}"
     return message
 

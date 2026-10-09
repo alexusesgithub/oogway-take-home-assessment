@@ -51,3 +51,19 @@ def test_short_edit_continues_current_artifact():
     assert decision.revises_artifact is True
     # Without an artifact in the session it is just a (weird) question.
     assert route_message("make it darker", has_artifact=False).route is Route.ANSWER
+
+
+@pytest.mark.parametrize(
+    ("message", "revises"),
+    [
+        ("make it darker", True),
+        ("Make the essay shorter", True),
+        ("add a section on pricing to the one-pager", True),
+        ("change the title to PMF playbook", True),
+        ("Create an HTML checklist and add the onboarding metrics", False),  # asks for something new
+        ("Make an HTML one-pager of the key ideas", False),
+        ("Turn that into a Ship 30 essay", False),
+    ],
+)
+def test_revision_detection_requires_reference_to_existing_work(message, revises):
+    assert route_message(message, has_artifact=True).revises_artifact is revises

@@ -301,3 +301,12 @@ async def test_ingest_endpoint_requires_admin_token_outside_development(client):
     resp = await client.post("/api/kb/ingest")
     assert resp.status_code == 401
     assert resp.json()["error"]["code"] == "unauthorized"
+
+
+async def test_canned_declines_are_not_shown_to_the_model_as_history(client, fake_runtime):
+    sid = await new_session(client)
+    await ask(client, sid, "What is a good chocolate cake recipe with frosting?")  # deterministic decline
+    await ask(client, sid, "How does Superhuman measure product-market fit?")
+    prompt = fake_runtime.requests[-1].prompt
+    assert "chocolate cake" in prompt  # the user's question is kept as context
+    assert "don't cover this" not in prompt  # the canned reply is not

@@ -124,6 +124,10 @@ async def send_message(
     client disconnects mid-stream; the stream is only a live view of it.
     """
     await repo.get_session(db, user, session_id)  # 404 before streaming starts
+    # Release this request's connection now: a turn can stream for minutes and the
+    # worker uses its own short-lived sessions. Holding it would exhaust the pool.
+    user_id = user.id
+    await db.close()
     service = request.app.state.chat_service
     request_id = getattr(request.state, "request_id", None)
 
@@ -133,7 +137,7 @@ async def send_message(
             return None
 
         result = await service.run_turn(
-            user_id=user.id,
+            user_id=user_id,
             session_id=session_id,
             content=body.content,
             mode=body.mode,
@@ -154,7 +158,7 @@ async def send_message(
     async def worker() -> None:
         try:
             await service.run_turn(
-                user_id=user.id,
+                user_id=user_id,
                 session_id=session_id,
                 content=body.content,
                 mode=body.mode,

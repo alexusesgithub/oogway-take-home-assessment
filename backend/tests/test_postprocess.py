@@ -123,3 +123,12 @@ def test_essay_checklist_flags_short_unstructured_text():
     report = check_essay("Just one paragraph about growth.", cited_sources=0)
     failed = {c.id for c in report.checks if not c.passed}
     assert {"length", "headline", "structure", "takeaway", "grounded"} <= failed
+
+
+def test_bracketed_disclaimer_echo_is_removed_but_real_declines_stay():
+    echoed = "[The transcripts I have don't cover this.] Onboarding lifts activation by 20 to 30% [S1]."
+    report = process_citations(echoed, VALID)
+    assert report.content.startswith("Onboarding lifts activation")
+    assert report.not_covered is False
+    real = process_citations("The transcripts I have don't cover this topic.", VALID)
+    assert real.not_covered is True

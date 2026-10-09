@@ -66,47 +66,55 @@ REVISION_RE = re.compile(
 )
 
 
+# A revision must point back at existing work ("it", "the essay") or be a very
+# short edit, and must not ask for something new ("create a checklist and add ...").
+REFERS_BACK_RE = re.compile(
+    r"\b(it|this|that|the (essay|artifact|page|doc|document|one-?pager|checklist|table|draft|post|article|"
+    r"cheat ?sheet|playbook|guide))\b",
+    re.I,
+)
+CREATES_NEW_RE = re.compile(r"\b(create|make|generate|build|design|draft|write|produce)\s+(a|an|another|new)\b", re.I)
+
+
 def _artifact_kind(message: str) -> ArtifactKind:
     return "html" if HTML_HINT_RE.search(message) else "markdown"
+
+
+def is_revision(message: str, has_artifact: bool) -> bool:
+    if not has_artifact or not REVISION_RE.search(message) or CREATES_NEW_RE.search(message):
+        return False
+    return bool(REFERS_BACK_RE.search(message)) or len(message.split()) <= 8
 
 
 def route_message(message: str, mode: Mode = "auto", has_artifact: bool = False) -> RouteDecision:
     """Pick the skill for a user message.
 
-    `has_artifact` lets short edit requests ("make it darker") continue the
-    artifact the session is already working on.
+    `has_artifact` lets edit requests ("make it darker", "make the essay
+    shorter") continue the artifact the session is already working on.
     """
     text = message.strip()
+    revision = is_revision(text, has_artifact)
     if mode == "answer":
         return RouteDecision(Route.ANSWER, "mode selected: Ask")
     if mode == "essay":
         return RouteDecision(Route.ESSAY, "mode selected: Essay", artifact_kind="markdown")
     if mode == "artifact":
-        return RouteDecision(
-            Route.ARTIFACT,
-            "mode selected: Artifact",
-            artifact_kind=_artifact_kind(text),
-            revises_artifact=has_artifact and bool(REVISION_RE.search(text)),
-        )
+        kind = _artifact_kind(text) if not revision or HTML_HINT_RE.search(text) else None
+        return RouteDecision(Route.ARTIFACT, "mode selected: Artifact", artifact_kind=kind, revises_artifact=revision)
 
     if CHITCHAT_RE.match(text):
         return RouteDecision(Route.CHITCHAT, "greeting or help request")
     if QUESTION_RE.match(text) and not EXPLICIT_ASK_RE.search(text):
         return RouteDecision(Route.ANSWER, "question (default)")
+    if revision:
+        # Edits keep the current artifact's kind (an essay stays Markdown).
+        return RouteDecision(Route.ARTIFACT, "edit to the current artifact", artifact_kind=None, revises_artifact=True)
     if ESSAY_RE.search(text) and not re.search(r"\bhtml\b", text, re.I):
         match = ESSAY_RE.search(text)
         return RouteDecision(Route.ESSAY, f'essay request ("{match.group(0)}")', artifact_kind="markdown")
     artifact = ARTIFACT_RE.search(text)
     if artifact:
-        kind = _artifact_kind(text)
         return RouteDecision(
-            Route.ARTIFACT,
-            f'artifact request ("{artifact.group(2)}")',
-            artifact_kind=kind,
-            revises_artifact=has_artifact and bool(REVISION_RE.search(text)),
-        )
-    if has_artifact and len(text.split()) <= 14 and REVISION_RE.search(text):
-        return RouteDecision(
-            Route.ARTIFACT, "short edit to the current artifact", artifact_kind=None, revises_artifact=True
+            Route.ARTIFACT, f'artifact request ("{artifact.group(2)}")', artifact_kind=_artifact_kind(text)
         )
     return RouteDecision(Route.ANSWER, "question (default)")

@@ -66,6 +66,8 @@ th, td { padding: 8px 10px; border: 1px solid #e4dacb; text-align: left; vertica
 th { background: #f3eee6; }
 code { font-family: ui-monospace, Menlo, monospace; font-size: 0.9em; background: #f3eee6; padding: 0.1em 0.3em; border-radius: 4px; }
 a { color: #9a3412; }
+sup.cite { font: 600 0.62em/1 system-ui, sans-serif; color: #9a3412; background: #fdebd9;
+           padding: 2px 4px; border-radius: 4px; margin-left: 2px; vertical-align: 0.5em; }
 @media (max-width: 600px) { body { padding: 24px 18px 40px; } h1 { font-size: 1.6em; } }
 """
 
@@ -75,6 +77,7 @@ HEAD_RE = re.compile(r"<head\b[^>]*>.*?</head>", re.I | re.S)
 CSS_URL_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.I | re.S)
 CSS_DANGEROUS_RE = re.compile(r"expression\s*\(|behavior\s*:|-moz-binding|javascript:", re.I)
 CSS_IMPORT_RE = re.compile(r"@import[^;]*;?", re.I)
+CITATION_IN_TEXT_RE = re.compile(r"\[S(\d{1,3})\](?![^<]*>)")
 
 COUNTERS = {
     "scripts": re.compile(r"<script\b", re.I),
@@ -98,25 +101,46 @@ class SanitizedHtml:
         return sum(self.report.values())
 
 
+CSS_ESCAPE_RE = re.compile(r"\\([0-9a-fA-F]{1,6})\s?")
+CSS_IMAGE_FN_RE = re.compile(r"(-webkit-)?\b(image-set|image|src|cross-fade|element)\s*\([^)]*\)?", re.I)
+HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+URL_NOISE_RE = re.compile(r"[\x00-\x20]+")
+
+
+def _decode_css_escapes(css: str) -> str:
+    r"""Undo CSS escapes (\75rl( -> url() so obfuscated URLs cannot dodge the filters."""
+
+    def _char(match: re.Match[str]) -> str:
+        code = int(match.group(1), 16)
+        return chr(code) if 0 < code < 0x110000 else ""
+
+    return CSS_ESCAPE_RE.sub(_char, css).replace("\\", "")
+
+
 def sanitize_css(css: str, report: dict[str, int]) -> str:
+    css = _decode_css_escapes(css)
     imports = len(CSS_IMPORT_RE.findall(css))
     css = CSS_IMPORT_RE.sub("", css)
 
     def _url(match: re.Match[str]) -> str:
-        target = match.group(2).strip()
-        if target.lower().startswith("data:image/") and "javascript" not in target.lower():
+        target = URL_NOISE_RE.sub("", match.group(2)).lower()
+        if target.startswith("data:image/") and not target.startswith("data:image/svg"):
             return match.group(0)
         report["external_resources"] = report.get("external_resources", 0) + 1
         return "none"
 
     css = CSS_URL_RE.sub(_url, css)
+    image_fns = len(CSS_IMAGE_FN_RE.findall(css))
+    if image_fns:  # image-set('https://...') etc. load resources without url()
+        css = CSS_IMAGE_FN_RE.sub("none", css)
+        report["external_resources"] = report.get("external_resources", 0) + image_fns
     dangerous = len(CSS_DANGEROUS_RE.findall(css))
     css = CSS_DANGEROUS_RE.sub("blocked:", css)
     if dangerous:
         report["css_expressions"] = report.get("css_expressions", 0) + dangerous
     if imports:
         report["external_stylesheets"] = max(report.get("external_stylesheets", 0), imports)
-    return css.replace("</", "<\\/")
+    return css.replace("</", r"<\/")
 
 
 def sanitize_html(document: str, title: str = "Artifact") -> SanitizedHtml:
@@ -126,6 +150,7 @@ def sanitize_html(document: str, title: str = "Artifact") -> SanitizedHtml:
         if count:
             report[name] = count
 
+    document = HTML_COMMENT_RE.sub("", document)  # a "<body>" inside a comment must not fool BODY_RE
     styles = "\n".join(sanitize_css(css, report) for css in STYLE_BLOCK_RE.findall(document))
     body_match = BODY_RE.search(document)
     body = body_match.group(1) if body_match else HEAD_RE.sub("", document)
@@ -134,12 +159,13 @@ def sanitize_html(document: str, title: str = "Artifact") -> SanitizedHtml:
     def attribute_filter(tag: str, attr: str, value: str) -> str | None:
         if attr == "style":
             return sanitize_css(value, report)
+        compact = URL_NOISE_RE.sub("", value).lower()  # defeats "d&#9;ata:" / " javascript:" tricks
         if tag == "img" and attr == "src":
-            if value.lower().startswith("data:image/") and not value.lower().startswith("data:image/svg"):
+            if compact.startswith("data:image/") and not compact.startswith("data:image/svg"):
                 return value
             report["external_resources"] = report.get("external_resources", 0) + 1
             return None
-        if value.strip().lower().startswith("data:"):  # data: only for images
+        if compact.startswith(("data:", "javascript:", "vbscript:")):  # data: only for <img>
             report["unsafe_urls"] = report.get("unsafe_urls", 0) + 1
             return None
         return value
@@ -154,6 +180,8 @@ def sanitize_html(document: str, title: str = "Artifact") -> SanitizedHtml:
         strip_comments=True,
         link_rel="noopener noreferrer nofollow",
     )
+    # Render [S1] citation markers as small badges, in text only (never inside a tag).
+    clean_body = CITATION_IN_TEXT_RE.sub(r'<sup class="cite">S\1</sup>', clean_body)
     safe_title = nh3.clean(title, tags=set())
     html = (
         '<!DOCTYPE html>\n<html lang="en"><head>'

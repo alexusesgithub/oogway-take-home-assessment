@@ -55,10 +55,13 @@ def normalise_citations(text: str) -> str:
 # Small-model failure modes: echoing the source header/tags instead of synthesising.
 ECHOED_HEADER_RE = re.compile(r"^\s*(?:[-*]\s*)?\[[^\]\n]{12,}\]\([^)\n]*\)\s*:?\s*", re.M)
 ECHOED_TAG_RE = re.compile(r"</?source\b[^>]*>", re.I)
+# A bracketed disclaimer is a copied instruction template, not a real decline.
+ECHOED_DISCLAIMER_RE = re.compile(r"^\s*\[[^\]\n]*(don'?t|do not) cover[^\]\n]*\]\s*", re.I)
 
 
 def scrub_echoes(text: str) -> str:
     text = ECHOED_TAG_RE.sub("", text)
+    text = ECHOED_DISCLAIMER_RE.sub("", text)
     return ECHOED_HEADER_RE.sub(lambda m: "- " if m.group(0).lstrip().startswith(("-", "*")) else "", text)
 
 

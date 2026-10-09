@@ -73,3 +73,30 @@ def test_report_explains_what_was_blocked(result):
 def test_clean_html_produces_empty_report():
     clean = sanitize_html("<html><body><h1>Hi</h1><p>Plain.</p></body></html>")
     assert clean.report == {}
+
+
+@pytest.mark.parametrize(
+    ("name", "html"),
+    [
+        ("image-set", "<body><p style=\"background: image-set('https://evil.example/a.png' 1x)\">x</p></body>"),
+        ("css-escape", r'<style>.a{background:\75rl(https://evil.example/b.png)} @\69mport "https://evil.example/c.css";</style><body>y</body>'),
+        ("tab-in-scheme", '<body><a href="d&#9;ata:text/html,<script>alert(1)</script>">z</a></body>'),
+        ("space-js", '<body><a href=" javascript:alert(1)">z</a></body>'),
+        ("svg-data-img", '<body><img src="data:image/svg+xml;base64,PHN2Zz4=" alt="x"></body>'),
+    ],
+)
+def test_review_bypass_vectors_are_blocked(name, html):
+    out = sanitize_html(html).html.lower()
+    assert "evil.example" not in out, name
+    assert "javascript:" not in out and "data:text" not in out and "data:image/svg" not in out, name
+
+
+def test_body_inside_comment_does_not_hide_content():
+    out = sanitize_html("<!-- <body> --><html><body><h1>Real</h1></body></html>").html
+    assert "<h1>Real</h1>" in out
+
+
+def test_citation_badges_only_in_text_not_attributes():
+    out = sanitize_html('<body><p title="[S2]">Claim [S1]</p></body>').html
+    assert 'title="[S2]"' in out
+    assert 'Claim <sup class="cite">S1</sup>' in out

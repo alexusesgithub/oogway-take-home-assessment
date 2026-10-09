@@ -40,41 +40,56 @@ export function useChat({ sessionId, onSessionCreated, onTurnFinished, onArtifac
   const [loadError, setLoadError] = useState<ApiErrorBody | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const creatingRef = useRef<string | null>(null);
+  // Refs, not state, guard re-entrancy: callbacks captured in older renders
+  // (e.g. a Retry button) must still see the current truth.
+  const inFlightRef = useRef(false);
+  const silentAbortRef = useRef(false);
+  const loadTokenRef = useRef(0);
 
   const load = useCallback(async (id: string) => {
+    const token = ++loadTokenRef.current;
     setLoading(true);
     setLoadError(null);
     try {
       const detail = await api.session(id);
+      if (token !== loadTokenRef.current) return; // a newer chat was selected meanwhile
       setMessages(detail.messages);
       setArtifacts(detail.artifacts);
     } catch (err) {
+      if (token !== loadTokenRef.current) return;
       setLoadError(err instanceof ApiError ? err.body : { code: "unknown", message: String(err) });
       setMessages([]);
       setArtifacts([]);
     } finally {
-      setLoading(false);
+      if (token === loadTokenRef.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    // A session created by our own send() is already in sync; keep streaming into it.
+    if (sessionId && creatingRef.current === sessionId) return;
+    // Switching chats: stop showing the old turn (the server still finishes and saves it).
+    if (abortRef.current) {
+      silentAbortRef.current = true;
+      abortRef.current.abort();
+    }
+    setPending(null);
     if (!sessionId) {
+      loadTokenRef.current++;
       setMessages([]);
       setArtifacts([]);
       setLoadError(null);
+      setLoading(false);
       return;
     }
-    // A session created by our own send() is already in sync; skip the reload.
-    if (creatingRef.current === sessionId) return;
-    abortRef.current?.abort();
-    setPending(null);
     void load(sessionId);
   }, [sessionId, load]);
 
   const send = useCallback(
     async (content: string, mode: Mode, provider: ProviderName | null) => {
       const text = content.trim();
-      if (!text || pending) return;
+      if (!text || inFlightRef.current) return;
+      inFlightRef.current = true;
 
       let id = sessionId;
       const turn: PendingTurn = {
@@ -166,18 +181,23 @@ export function useChat({ sessionId, onSessionCreated, onTurnFinished, onArtifac
       } catch (err) {
         if ((err as Error).name === "AbortError") {
           setPending(null);
+          if (silentAbortRef.current) {
+            silentAbortRef.current = false;
+            return;
+          }
           notify("Stopped. The server still finishes and saves this answer; reopen the chat in a moment to see it.");
         } else {
           const body = err instanceof ApiError ? err.body : { code: "unknown", message: String(err) };
           setPending((p) => p && { ...p, stage: "error", error: body });
         }
       } finally {
+        inFlightRef.current = false;
         abortRef.current = null;
         creatingRef.current = null;
         onTurnFinished();
       }
     },
-    [sessionId, pending, onSessionCreated, onTurnFinished, onArtifact, notify],
+    [sessionId, onSessionCreated, onTurnFinished, onArtifact, notify],
   );
 
   const stop = useCallback(() => abortRef.current?.abort(), []);

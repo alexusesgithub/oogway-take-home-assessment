@@ -52,7 +52,10 @@ export function PendingMessage({ turn, localModel, onRetry, onDismiss }: Props) 
           <div className="status-line" role="status" aria-live="polite">
             <span className="spinner" aria-hidden />
             <span>{turn.label}…</span>
-            <span className="elapsed">{elapsed}s</span>
+            {/* The ticking timer is visual only: screen readers hear stage changes, not every second. */}
+            <span className="elapsed" aria-hidden="true">
+              {elapsed}s
+            </span>
           </div>
         )}
 

@@ -24,7 +24,8 @@ class Settings(BaseSettings):
     )
 
     # --- Runtime ---------------------------------------------------------
-    app_env: Literal["development", "production", "test"] = "development"
+    # Secure by default: the admin ingest endpoint is open only when APP_ENV=development.
+    app_env: Literal["development", "production", "test"] = "production"
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "json"
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
@@ -67,8 +68,7 @@ class Settings(BaseSettings):
     chunk_target_words: int = 280
     chunk_max_words: int = 420
 
-    retrieval_top_k: int = 8
-    retrieval_top_k_local: int = 5
+    # Per-skill source budgets (top_k / top_k_local) live in each SKILL.md.
     retrieval_max_per_episode: int = 2
     retrieval_candidate_pool: int = 60
 

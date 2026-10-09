@@ -99,3 +99,13 @@ def test_merge_continuation_drops_repeated_turn():
 
 def test_query_bigrams():
     assert query_bigrams("build a growth team") == ["build a", "a growth", "growth team"]
+
+
+def test_self_contained_question_after_topic_switch_is_not_merged():
+    # Regression: an 8-word standalone question was merged with an unrelated
+    # previous question ("chocolate cake"), which then dominated retrieval.
+    previous = ["What's a good chocolate cake recipe?"]
+    q = "What do guests recommend for improving onboarding activation?"
+    assert build_retrieval_query(q, previous) == q
+    assert build_retrieval_query("And for B2B?", previous).startswith("What's a good")
+    assert build_retrieval_query("Why does that work?", previous).startswith("What's a good")

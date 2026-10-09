@@ -40,7 +40,12 @@ export function ArtifactPanel({ artifacts, activeId, sources, onSelect, onClose 
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") (full ? setFull(false) : onClose());
+      if (e.key !== "Escape") return;
+      const target = e.target as HTMLElement | null;
+      // Don't steal Escape from text entry (composer) or open menus.
+      if (target?.closest("textarea, input, select, [role='menu']")) return;
+      if (full) setFull(false);
+      else onClose();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -116,12 +121,25 @@ export function ArtifactPanel({ artifacts, activeId, sources, onSelect, onClose 
         </button>
       </div>
 
-      <div className="panel-tabs" role="tablist" aria-label="View">
+      <div
+        className="panel-tabs"
+        role="tablist"
+        aria-label="View"
+        onKeyDown={(e) => {
+          if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+            const next = tab === "preview" ? "source" : "preview";
+            setTab(next);
+            (e.currentTarget.querySelector(`[data-tab="${next}"]`) as HTMLElement | null)?.focus();
+          }
+        }}
+      >
         {(["preview", "source"] as const).map((t) => (
           <button
             key={t}
             type="button"
             role="tab"
+            data-tab={t}
+            tabIndex={tab === t ? 0 : -1}
             aria-selected={tab === t}
             aria-controls="artifact-view"
             className="panel-tab"

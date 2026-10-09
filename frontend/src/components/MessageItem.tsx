@@ -228,7 +228,7 @@ function EssayChecklist({ checks }: { checks: { id: string; label: string; passe
                 <XCircle size={15} className="fail" aria-label="not met" />
               )}
               <span>{c.label}</span>
-              <span className="detail">{c.detail}</span>
+              <span className="detail" title={c.detail}>{c.detail}</span>
             </li>
           ))}
         </ul>

@@ -43,8 +43,10 @@ log = structlog.get_logger("chat")
 
 Emit = Callable[[str, dict[str, Any]], Awaitable[None]]
 
-MIN_COVERAGE = 0.5  # below: decline without calling the model
-WEAK_COVERAGE = 0.75  # below: tell the model the evidence is weak
+# Measured on the real corpus: 16 in-domain questions scored >= 0.79 (14 of them 1.0);
+# off-topic probes mostly 0.33-0.65. See docs/architecture.md section 6.
+MIN_COVERAGE = 0.72  # below: decline without calling the model
+WEAK_COVERAGE = 0.9  # below: tell the model the evidence is weak
 LOCAL_EXCERPT_WORDS = 170
 
 CHITCHAT_REPLY = """Hi! I'm the **Lenny Growth Assistant**. I answer product and growth questions using \
@@ -91,6 +93,36 @@ def _title_from(text: str) -> str:
 
 def _topic_words(text: str) -> list[str]:
     return [w for w in re.findall(r"[A-Za-z0-9-]+", text.lower()) if w not in COMMAND_WORDS]
+
+
+CITATION_MARKER_RE = re.compile(r"\[S(\d+)\]")
+
+
+def _is_model_context(message: Message) -> bool:
+    """Canned system replies (declines, help text, evidence-only) are not real
+    conversation: a small model shown them imitates the decline on later turns."""
+    if message.role == "user":
+        return True
+    if message.status != "complete" or message.route == "chitchat":
+        return False
+    return (message.quality or {}).get("reason") != "no_evidence"
+
+
+def strip_citations(text: str) -> str:
+    return CITATION_MARKER_RE.sub("", text)
+
+
+def remap_citations(text: str, old_sources: list[dict[str, Any]], registry: SourceRegistry) -> str:
+    """Rewrite [S#] markers from a previous turn's numbering to this turn's,
+    via chunk ids. Markers whose passage is not in this turn's evidence are dropped."""
+    old_to_chunk = {s.get("id"): s.get("chunk_id") for s in old_sources}
+    chunk_to_new = {chunk.chunk_id: sid for sid, chunk in registry.items()}
+
+    def _sub(match: re.Match[str]) -> str:
+        new = chunk_to_new.get(old_to_chunk.get(f"S{match.group(1)}"))
+        return f"[{new}]" if new else ""
+
+    return CITATION_MARKER_RE.sub(_sub, text)
 
 
 def _overlaps(topic: list[str], previous: str) -> bool:
@@ -171,6 +203,10 @@ class ChatService:
             session = await repo.get_session(db, user, session_id)
             history = await repo.session_messages(db, session.id, limit=12)
             current_artifact = await repo.latest_artifact(db, session.id)
+            artifact_sources: list[dict[str, Any]] = []
+            if current_artifact is not None and current_artifact.message_id is not None:
+                producer = await db.get(Message, current_artifact.message_id)
+                artifact_sources = producer.sources if producer else []
             user_msg = await repo.add_message(db, session_id=session.id, role="user", content=content)
             new_title = _title_from(content) if not history and session.title == "New chat" else None
             await repo.touch_session(db, session, title=new_title)
@@ -264,7 +300,16 @@ class ChatService:
                 )
             try:
                 outcome = await self._generate(
-                    attempt, skill, decision, content, history, registry, current_artifact, best_coverage, emit
+                    attempt,
+                    skill,
+                    decision,
+                    content,
+                    history,
+                    registry,
+                    current_artifact,
+                    artifact_sources,
+                    best_coverage,
+                    emit,
                 )
             except AppError as exc:
                 last_error = exc
@@ -328,9 +373,9 @@ class ChatService:
                 or _overlaps(topic, f"{previous_questions[-1] if previous_questions else ''} {last_answer.content}")
             )
             if builds_on_previous and last_answer is not None:
-                cited = set(last_answer.citations or [])
-                ranked = sorted(last_answer.sources, key=lambda s: 0 if s.get("id") in cited else 1)
-                carried = [RetrievedChunk.from_source(s) for s in ranked]
+                # Keep the stored order so carried evidence keeps its S-numbers where possible;
+                # any renumbering is handled by remap_citations() on the current artifact.
+                carried = [RetrievedChunk.from_source(s) for s in last_answer.sources]
                 if previous_questions:
                     query = f"{previous_questions[-1]} {' '.join(topic)}".strip()
 
@@ -343,6 +388,19 @@ class ChatService:
                 exclude_chunk_ids=[c.chunk_id for c in carried],
                 expand_neighbors=True,
             )
+            if decision.route is Route.ANSWER and query != content:
+                # The follow-up merge is a heuristic: if the message alone retrieves
+                # better evidence (a topic switch), trust that instead.
+                standalone = await self.retriever.search(
+                    db,
+                    content,
+                    top_k=top_k,
+                    max_per_episode=self.settings.retrieval_max_per_episode,
+                    expand_neighbors=True,
+                )
+                if standalone.best_coverage > result.best_coverage:
+                    log.info("followup_merge_rejected", merged=result.best_coverage, alone=standalone.best_coverage)
+                    query, result = content, standalone
         registry = SourceRegistry()
         if carried:
             keep = max(top_k // 2 + 1, top_k - len(result.chunks))
@@ -372,6 +430,7 @@ class ChatService:
         history: list[Message],
         registry: SourceRegistry,
         current_artifact: Artifact | None,
+        artifact_sources: list[dict[str, Any]],
         best_coverage: float,
         emit: Emit,
     ) -> dict[str, Any]:
@@ -392,7 +451,16 @@ class ChatService:
             }
         else:
             output, metrics = await self._single_pass(
-                target, skill, decision, content, history, registry, current_artifact, best_coverage, emit
+                target,
+                skill,
+                decision,
+                content,
+                history,
+                registry,
+                current_artifact,
+                artifact_sources,
+                best_coverage,
+                emit,
             )
         return self._postprocess(output, metrics, skill, decision, registry)
 
@@ -409,23 +477,36 @@ class ChatService:
         history: list[Message],
         registry: SourceRegistry,
         current_artifact: Artifact | None,
+        artifact_sources: list[dict[str, Any]],
         best_coverage: float,
         emit: Emit,
     ) -> tuple[str, dict[str, Any]]:
         max_out = min(skill.max_output_tokens, target.max_output_tokens)
+        artifact_text = None
+        if decision.revises_artifact and current_artifact is not None:
+            # Old [S#] markers refer to the numbering of the turn that produced the artifact.
+            artifact_text = remap_citations(current_artifact.content, artifact_sources, registry)
         bundle = build_prompt(
             skill=skill,
             request=content,
             sources=registry,
-            history=[HistoryTurn(m.role, m.content) for m in history if m.status != "error"],
+            # Past answers' [S#] markers use a different numbering: strip them.
+            history=[HistoryTurn(m.role, strip_citations(m.content)) for m in history if _is_model_context(m)],
             context_tokens=target.context_tokens,
             max_output_tokens=max_out,
             tools_enabled=target.tools_enabled,
             weak_evidence=best_coverage < WEAK_COVERAGE,
             artifact_kind=decision.artifact_kind,
-            current_artifact=current_artifact.content if decision.revises_artifact and current_artifact else None,
+            current_artifact=artifact_text,
         )
         registry.truncate(bundle.sources_used)
+        if bundle.trimmed.get("source_words"):
+            # Store, show and attribute against exactly the excerpt the model saw.
+            limit = bundle.trimmed["source_words"]
+            for _, chunk in registry.items():
+                words = chunk.text.split(" ")
+                if len(chunk.text.split()) > limit:
+                    chunk.text = " ".join(words[:limit]) + " ..."
         log.info(
             "prompt_built",
             skill=skill.name,

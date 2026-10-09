@@ -16,6 +16,7 @@ only changes *how* the skill is executed. Cloud models keep the single pass.
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -24,8 +25,12 @@ from app.agent.prompts import GROUNDING_RULES, SourceRegistry, format_sources
 from app.agent.providers import ProviderTarget
 from app.agent.runtime import AgentRequest, AgentRuntime
 from app.agent.skills import Skill
+from app.errors import ModelTimeout
 
 Emit = Callable[[str, dict[str, Any]], Awaitable[None]]
+
+ESSAY_BUDGET_FACTOR = 3
+SECTION_SOURCE_WORDS = 170
 
 OUTLINE_RE = re.compile(r"^\s*(\d)[.)]\s*(.+?)\s*(?:\|\s*(.*))?$")
 
@@ -82,8 +87,20 @@ class SectionedEssayWriter:
         self.runtime = runtime
         self.emit = emit
         self.timeout = timeout_seconds
+        # The whole essay (~7 calls) gets ESSAY_BUDGET_FACTOR x the per-call limit.
+        self.deadline = time.monotonic() + timeout_seconds * ESSAY_BUDGET_FACTOR
         self.calls = 0
         self.first_token_ms: int | None = None
+
+    def _remaining(self) -> float:
+        remaining = min(self.timeout, self.deadline - time.monotonic())
+        if remaining <= 5:
+            raise ModelTimeout(
+                "The essay did not finish within its time budget.",
+                hint="Local models on CPU are slow for long-form. Raise LLM_TIMEOUT_SECONDS or use Claude.",
+                details={"stage": "essay"},
+            )
+        return remaining
 
     async def _call(self, target: ProviderTarget, system: str, prompt: str, max_tokens: int, stream: bool) -> str:
         self.calls += 1
@@ -94,7 +111,7 @@ class SectionedEssayWriter:
             system_prompt=system,
             prompt=prompt,
             max_output_tokens=max_tokens,
-            timeout_seconds=self.timeout,
+            timeout_seconds=self._remaining(),
         )
         async for event in self.runtime.run(request):
             if event.type == "delta":
@@ -110,6 +127,10 @@ class SectionedEssayWriter:
     async def write(self, target: ProviderTarget, skill: Skill, request: str, registry: SourceRegistry) -> str:
         items = registry.items()
         valid_ids = [sid for sid, _ in items]
+        # Attribution and stored sources must match what the model saw (<= 170 words each).
+        for _, chunk in items:
+            if len(chunk.text.split()) > SECTION_SOURCE_WORDS:
+                chunk.text = " ".join(chunk.text.split(" ")[:SECTION_SOURCE_WORDS]) + " ..."
         by_id = dict(items)
         guests = list(dict.fromkeys(c.guest for _, c in items))
         rules = f"{GROUNDING_RULES}\n{principles(skill)}"
@@ -130,7 +151,9 @@ class SectionedEssayWriter:
 
         async def part(label: str, sources: list[str], instruction: str, max_tokens: int) -> str:
             await self.emit("status", {"stage": "generating", "label": label})
-            evidence = format_sources([(sid, by_id[sid]) for sid in sources if sid in by_id], max_words=170)
+            evidence = format_sources(
+                [(sid, by_id[sid]) for sid in sources if sid in by_id], max_words=SECTION_SOURCE_WORDS
+            )
             text = await self._call(
                 target,
                 rules,
