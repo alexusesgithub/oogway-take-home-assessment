@@ -53,7 +53,7 @@ POST /api/sessions/{id}/messages
  └─ route  → answer | essay | artifact | chitchat   (rules + optional UI mode override)
  └─ resolve provider → requested → LLM_PROVIDER → LLM_FALLBACK_PROVIDER
  └─ retrieve evidence  (BM25 + bigram proximity, diversity, neighbour expansion)
- └─ guardrail: no evidence / coverage < 0.5 → honest "not covered" (model not called)
+ └─ guardrail: no evidence / coverage < 0.72 → honest "not covered" (model not called)
  └─ compose prompt: grounding rules + active SKILL.md + <source> tags + history (budgeted)
  └─ run agent (Claude Agent SDK) → stream deltas over SSE
  └─ post-process: validate citations → attribution check → extract artifact → essay checklist
@@ -111,7 +111,7 @@ erDiagram
 
 Design notes:
 
-- **`messages.sources` is a snapshot** of the exact excerpts shown to the model (S1…Sn). Citations stay resolvable and auditable even after the knowledge base is refreshed.
+- **`messages.sources` is a snapshot** of the exact excerpts shown to the model (S1…Sn), after any trimming. Attribution checks run against the same text. Citations stay resolvable and auditable even after the knowledge base is refreshed. When a later turn revises an artifact, its `[S#]` markers are remapped by chunk id to the new turn's numbering, and history markers are stripped.
 - **`messages.quality`** stores the grounding verdict: answer type, valid and invalid citations, inferred citations, unsupported statements, unverified quotes and the essay checklist.
 - **`messages.metrics`** stores retrieval time, TTFT, total time, tokens, cost, prompt trimming and essay strategy. `/api/metrics` aggregates both columns.
 - **`artifacts.content` keeps the raw model output** for audit. Rendering always goes through the sanitiser, and `sanitizer_report` records what was removed.
@@ -199,11 +199,16 @@ Lexical search is the default because it is instant and needs no model. On the d
 
 | Coverage | Behaviour |
 |---|---|
-| no chunks or < 0.50 | Deterministic "the transcripts don't cover this". The model is **not** called. |
-| 0.50 – 0.75 | The model is called with a *weak evidence* instruction to decline unless clearly supported. |
-| ≥ 0.75 | Normal grounded answer. |
+| no chunks or < 0.72 | Deterministic "the transcripts don't cover this". The model is **not** called. |
+| 0.72 – 0.90 | The model is called with a *weak evidence* instruction to decline unless clearly supported. |
+| ≥ 0.90 | Normal grounded answer. |
 
-These thresholds were measured on real queries: out-of-domain questions like "chocolate cake recipe" and "who won the 2022 world cup" scored 0.55–0.65, while in-domain ones scored 1.0. Use `GET /api/search?q=…` to inspect any query.
+The thresholds come from measurements on the real corpus:
+
+- **In-domain:** 16 questions, all ≥ 0.79 (14 of them 1.0).
+- **Off-topic:** probes such as "chocolate cake recipe" (0.65), "who won the 2022 world cup" (0.55) and "fix a leaking faucet" (0.33) mostly scored 0.33–0.65.
+
+**Known limit:** off-topic questions whose every word appears somewhere in 4.6M words of conversation ("capital of France", "bake sourdough") score 1.0 lexically. For those, the grounding rules make the model decline. Embeddings or a relevance reranker would catch them earlier. Use `GET /api/search?q=…` to inspect any query.
 
 ---
 
